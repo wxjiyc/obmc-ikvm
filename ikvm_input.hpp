@@ -80,7 +80,7 @@ class Input
     };
     /* @brief Path to the HID gadget UDC */
     static constexpr const char* hidUdcPath =
-        "/sys/kernel/config/usb_gadget/obmc_hid/UDC";
+        "/sys/kernel/config/usb_gadget/obmc/UDC";
     /* @brief Path to the USB virtual hub */
     static constexpr const char* usbVirtualHubPath =
         "/sys/bus/platform/devices/1e6a0000.usb-vhub";

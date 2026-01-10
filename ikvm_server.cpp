@@ -18,7 +18,7 @@ using namespace sdbusplus::xyz::openbmc_project::Common::Error;
 Server::Server(const Args& args, Input& i, Video& v) :
     pendingResize(false), frameCounter(0), numClients(0), input(i), video(v)
 {
-    std::string ip("localhost");
+    std::string ip("0.0.0.0");
     const Args::CommandLine& commandLine = args.getCommandLine();
     int argc = commandLine.argc;
 
@@ -95,13 +95,34 @@ void Server::run()
 void Server::sendFrame()
 {
     char* data = video.getData();
+    size_t size = video.getFrameSize();
     rfbClientIteratorPtr it;
     rfbClientPtr cl;
     int64_t frame_crc = -1;
 
-    if (!data || pendingResize)
+    if (!data || size == 0 || pendingResize)
     {
         return;
+    }
+
+    // --- MJPEG 帧头对齐处理 ---
+    char* effective_data = data;
+    size_t effective_size = size;
+
+    if (video.getPixelformat() == V4L2_PIX_FMT_JPEG || 
+        video.getPixelformat() == V4L2_PIX_FMT_MJPEG) 
+    {
+        // 寻找 JPEG 起始标志 0xFF 0xD8
+        bool found = false;
+        for (size_t i = 0; i < size - 1; ++i) {
+            if ((unsigned char)data[i] == 0xFF && (unsigned char)data[i+1] == 0xD8) {
+                effective_data = data + i;
+                effective_size = size - i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return; // 如果没找到合法帧头，跳过此帧
     }
 
     it = rfbGetClientIterator(server);
@@ -111,73 +132,54 @@ void Server::sendFrame()
         ClientData* cd = (ClientData*)cl->clientData;
         rfbFramebufferUpdateMsg* fu = (rfbFramebufferUpdateMsg*)cl->updateBuf;
 
-        if (!cd)
-        {
-            continue;
-        }
-
-        if (cd->skipFrame)
-        {
-            cd->skipFrame--;
-            continue;
-        }
-
-        if (!cd->needUpdate)
-        {
-            continue;
-        }
+        if (!cd) continue;
+        if (cd->skipFrame) { cd->skipFrame--; continue; }
+        if (!cd->needUpdate) continue;
 
         if (calcFrameCRC)
         {
             if (frame_crc == -1)
             {
-                /* JFIF header contains some varying data so skip it for
-                 * checksum calculation */
-                frame_crc =
-                    boost::crc<32, 0x04C11DB7, 0xFFFFFFFF, 0xFFFFFFFF, true,
-                               true>(data + 0x30, video.getFrameSize() - 0x30);
+                // 注意：CRC 计算也应基于对齐后的数据起始点
+                // 偏移 0x30 避开可能变动的头部字段
+                if (effective_size > 0x30) {
+                    frame_crc = boost::crc<32, 0x04C11DB7, 0xFFFFFFFF, 0xFFFFFFFF, true, true>(
+                        effective_data + 0x30, effective_size - 0x30);
+                } else {
+                    frame_crc = 0;
+                }
             }
 
-            if (cd->last_crc == frame_crc)
-            {
-                continue;
-            }
-
+            if (cd->last_crc == frame_crc) continue;
             cd->last_crc = frame_crc;
         }
 
         cd->needUpdate = false;
 
-        if (cl->enableLastRectEncoding)
-        {
-            fu->nRects = 0xFFFF;
-        }
-        else
-        {
-            fu->nRects = Swap16IfLE(1);
-        }
+        if (cl->enableLastRectEncoding) fu->nRects = 0xFFFF;
+        else fu->nRects = Swap16IfLE(1);
 
         switch (video.getPixelformat())
         {
             case V4L2_PIX_FMT_RGB24:
-                framebuffer.assign(data, data + video.getFrameSize());
-                rfbMarkRectAsModified(server, 0, 0, video.getWidth(),
-                                      video.getHeight());
+                framebuffer.assign(data, data + size);
+                rfbMarkRectAsModified(server, 0, 0, video.getWidth(), video.getHeight());
                 break;
 
             case V4L2_PIX_FMT_JPEG:
+            case V4L2_PIX_FMT_MJPEG:
                 fu->type = rfbFramebufferUpdate;
                 cl->ublen = sz_rfbFramebufferUpdateMsg;
                 rfbSendUpdateBuf(cl);
                 cl->tightEncoding = rfbEncodingTight;
-                rfbSendTightHeader(cl, 0, 0, video.getWidth(),
-                                   video.getHeight());
+                rfbSendTightHeader(cl, 0, 0, video.getWidth(), video.getHeight());
+
                 cl->updateBuf[cl->ublen++] = (char)(rfbTightJpeg << 4);
-                rfbSendCompressedDataTight(cl, data, video.getFrameSize());
-                if (cl->enableLastRectEncoding)
-                {
-                    rfbSendLastRectMarker(cl);
-                }
+
+                // 零拷贝关键：直接传递偏移后的指针和剩余长度
+                rfbSendCompressedDataTight(cl, effective_data, effective_size);
+
+                if (cl->enableLastRectEncoding) rfbSendLastRectMarker(cl);
                 rfbSendUpdateBuf(cl);
                 break;
 
@@ -185,7 +187,6 @@ void Server::sendFrame()
                 break;
         }
     }
-
     rfbReleaseClientIterator(it);
 }
 

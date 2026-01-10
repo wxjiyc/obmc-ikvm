@@ -32,8 +32,8 @@ using namespace sdbusplus::xyz::openbmc_project::Common::Device::Error;
 
 Video::Video(const std::string& p, Input& input, int fr, int sub) :
     resizeAfterOpen(false), timingsError(false), fd(-1), frameRate(fr),
-    lastFrameIndex(-1), height(600), width(800), subSampling(sub), input(input),
-    path(p), pixelformat(V4L2_PIX_FMT_JPEG)
+    lastFrameIndex(-1), height(1080), width(1920), subSampling(sub), input(input),
+    path(p), pixelformat(V4L2_PIX_FMT_MJPEG)
 {}
 
 Video::~Video()
@@ -138,6 +138,8 @@ bool Video::needsResize()
 {
     int rc;
     v4l2_dv_timings timings;
+
+    return false;
 
     if (fd < 0)
     {
@@ -378,7 +380,7 @@ void Video::start()
     v4l2_capability cap;
     v4l2_format fmt;
     v4l2_streamparm sparm;
-    v4l2_control ctrl;
+    // v4l2_control ctrl;
 
     if (fd >= 0)
     {
@@ -445,21 +447,11 @@ void Video::start()
                             entry("ERROR=%s", strerror(errno)));
     }
 
-    ctrl.id = V4L2_CID_JPEG_CHROMA_SUBSAMPLING;
-    ctrl.value = subSampling ? V4L2_JPEG_CHROMA_SUBSAMPLING_420
-                             : V4L2_JPEG_CHROMA_SUBSAMPLING_444;
-    rc = ioctl(fd, VIDIOC_S_CTRL, &ctrl);
-    if (rc < 0)
-    {
-        log<level::WARNING>("Failed to set video jpeg subsampling",
-                            entry("ERROR=%s", strerror(errno)));
-    }
-
     height = fmt.fmt.pix.height;
     width = fmt.fmt.pix.width;
     pixelformat = fmt.fmt.pix.pixelformat;
 
-    if (pixelformat != V4L2_PIX_FMT_RGB24 && pixelformat != V4L2_PIX_FMT_JPEG)
+    if (pixelformat != V4L2_PIX_FMT_RGB24 && pixelformat != V4L2_PIX_FMT_JPEG && pixelformat != V4L2_PIX_FMT_MJPEG)
     {
         log<level::ERR>("Pixel Format not supported",
                         entry("PIXELFORMAT=%d", pixelformat));
